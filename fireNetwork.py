@@ -1,3 +1,194 @@
+
+
+import os
+
+FIRE_PATH = os.path.sep.join(["Robbery_Accident_Fire_Database2",
+	"Fire"])
+NON_FIRE_PATH = "spatial_envelope_256x256_static_8outdoorcategories"
+
+CLASSES = ["Non-Fire", "Fire"]
+TRAIN_SPLIT = 0.75
+TEST_SPLIT = 0.25
+INIT_LR = 1e-2
+BATCH_SIZE = 64
+NUM_EPOCHS = 50
+MODEL_PATH = os.path.sep.join(["output", "fire_detection.model"])
+LRFIND_PLOT_PATH = os.path.sep.join(["output", "lrfind_plot.png"])
+TRAINING_PLOT_PATH = os.path.sep.join(["output", "training_plot.png"])
+OUTPUT_IMAGE_PATH = os.path.sep.join(["output", "examples"])
+SAMPLE_SIZE = 50
+
+from tensorflow.keras.callbacks import LambdaCallback
+from tensorflow.keras import backend as K
+import matplotlib.pyplot as plt
+import numpy as np
+import tempfile
+
+class LearningRateFinder:
+	def __init__(self, model, stopFactor=4, beta=0.98):
+		self.model = model
+		self.stopFactor = stopFactor
+		self.beta = beta
+
+		self.lrs = []
+		self.losses = []
+
+		self.lrMult = 1
+		self.avgLoss = 0
+		self.bestLoss = 1e9
+		self.batchNum = 0
+		self.weightsFile = None
+
+	def reset(self):
+		self.lrs = []
+		self.losses = []
+		self.lrMult = 1
+		self.avgLoss = 0
+		self.bestLoss = 1e9
+		self.batchNum = 0
+		self.weightsFile = None
+
+	def is_data_iter(self, data):
+		iterClasses = ["NumpyArrayIterator", "DirectoryIterator",
+			 "DataFrameIterator", "Iterator", "Sequence"]
+
+		return data.__class__.__name__ in iterClasses
+
+	def on_batch_end(self, batch, logs):
+		lr = K.get_value(self.model.optimizer.lr)
+		self.lrs.append(lr)
+
+		l = logs["loss"]
+		self.batchNum += 1
+		self.avgLoss = (self.beta * self.avgLoss) + ((1 - self.beta) * l)
+		smooth = self.avgLoss / (1 - (self.beta ** self.batchNum))
+		self.losses.append(smooth)
+
+		stopLoss = self.stopFactor * self.bestLoss
+
+		if self.batchNum > 1 and smooth > stopLoss:
+			self.model.stop_training = True
+			return
+
+		if self.batchNum == 1 or smooth < self.bestLoss:
+			self.bestLoss = smooth
+
+		lr *= self.lrMult
+		K.set_value(self.model.optimizer.lr, lr)
+
+	def find(self, trainData, startLR, endLR, epochs=None,
+		stepsPerEpoch=None, batchSize=32, sampleSize=2048,
+		classWeight=None, verbose=1):
+		self.reset()
+
+		useGen = self.is_data_iter(trainData)
+
+		if useGen and stepsPerEpoch is None:
+			msg = "Using generator without supplying stepsPerEpoch"
+			raise Exception(msg)
+
+		elif not useGen:
+			numSamples = len(trainData[0])
+			stepsPerEpoch = np.ceil(numSamples / float(batchSize))
+
+		if epochs is None:
+			epochs = int(np.ceil(sampleSize / float(stepsPerEpoch)))
+
+		numBatchUpdates = epochs * stepsPerEpoch
+
+		self.lrMult = (endLR / startLR) ** (1.0 / numBatchUpdates)
+
+		self.weightsFile = tempfile.mkstemp()[1]
+		self.model.save_weights(self.weightsFile)
+
+		origLR = K.get_value(self.model.optimizer.lr)
+		K.set_value(self.model.optimizer.lr, startLR)
+
+		callback = LambdaCallback(on_batch_end=lambda batch, logs:
+			self.on_batch_end(batch, logs))
+
+		if useGen:
+			self.model.fit_generator(
+				trainData,
+				steps_per_epoch=stepsPerEpoch,
+				epochs=epochs,
+				class_weight=classWeight,
+				verbose=verbose,
+				callbacks=[callback])
+
+		else:
+			self.model.fit(
+				trainData[0], trainData[1],
+				batch_size=batchSize,
+				epochs=epochs,
+				class_weight=classWeight,
+				callbacks=[callback],
+				verbose=verbose)
+
+		self.model.load_weights(self.weightsFile)
+		K.set_value(self.model.optimizer.lr, origLR)
+
+	def plot_loss(self, skipBegin=10, skipEnd=1, title=""):
+		lrs = self.lrs[skipBegin:-skipEnd]
+		losses = self.losses[skipBegin:-skipEnd]
+
+		plt.plot(lrs, losses)
+		plt.xscale("log")
+		plt.xlabel("Learning Rate (Log Scale)")
+		plt.ylabel("Loss")
+
+		if title != "":
+			plt.title(title)
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import BatchNormalization
+from tensorflow.keras.layers import SeparableConv2D
+from tensorflow.keras.layers import MaxPooling2D
+from tensorflow.keras.layers import Activation
+from tensorflow.keras.layers import Flatten
+from tensorflow.keras.layers import Dropout
+from tensorflow.keras.layers import Dense
+
+class FireDetectionNet:
+	@staticmethod
+	def build(width, height, depth, classes):
+		model = Sequential()
+		inputShape = (height, width, depth)
+		chanDim = -1
+
+		model.add(SeparableConv2D(16, (7, 7), padding="same",
+			input_shape=inputShape))
+		model.add(Activation("relu"))
+		model.add(BatchNormalization(axis=chanDim))
+		model.add(MaxPooling2D(pool_size=(2, 2)))
+
+		model.add(SeparableConv2D(32, (3, 3), padding="same"))
+		model.add(Activation("relu"))
+		model.add(BatchNormalization(axis=chanDim))
+		model.add(MaxPooling2D(pool_size=(2, 2)))
+
+		model.add(SeparableConv2D(64, (3, 3), padding="same"))
+		model.add(Activation("relu"))
+		model.add(BatchNormalization(axis=chanDim))
+		model.add(SeparableConv2D(64, (3, 3), padding="same"))
+		model.add(Activation("relu"))
+		model.add(BatchNormalization(axis=chanDim))
+		model.add(MaxPooling2D(pool_size=(2, 2)))
+
+		model.add(Flatten())
+		model.add(Dense(128))
+		model.add(Activation("relu"))
+		model.add(BatchNormalization())
+		model.add(Dropout(0.5))
+
+		model.add(Dense(128))
+		model.add(Activation("relu"))
+		model.add(BatchNormalization())
+		model.add(Dropout(0.5))
+
+		model.add(Dense(classes))
+		model.add(Activation("softmax"))
+
+		return model
 from tensorflow.keras.preprocessing.image import ImageDataGenerator
 from tensorflow.keras.optimizers import SGD
 from tensorflow.keras.utils import to_categorical
