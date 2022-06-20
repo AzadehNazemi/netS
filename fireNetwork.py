@@ -2,9 +2,8 @@
 
 import os
 
-FIRE_PATH = os.path.sep.join(["Robbery_Accident_Fire_Database2",
-	"Fire"])
-NON_FIRE_PATH = "spatial_envelope_256x256_static_8outdoorcategories"
+FIRE_PATH = os.Fire"
+NON_FIRE_PATH = "noFire"
 
 CLASSES = ["Non-Fire", "Fire"]
 TRAIN_SPLIT = 0.75
@@ -194,9 +193,6 @@ from tensorflow.keras.optimizers import SGD
 from tensorflow.keras.utils import to_categorical
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report
-from pyimagesearch.learningratefinder import LearningRateFinder
-from pyimagesearch.firedetectionnet import FireDetectionNet
-from pyimagesearch import config
 from imutils import paths
 import numpy as np
 import cv2
